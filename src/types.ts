@@ -6,16 +6,10 @@ export interface ServerConfig {
 }
 
 export interface EnvironmentConfig {
-  API_URL: string;
-  HUB_API_KEY: string;
-  RPS_API_KEY: string;
   HOST_IP: string;
   PORT: number;
   INVENTORY_API_KEY: string;
-  collectionAddress: string;
-  chainName: string;
-  enableWebhookVerification: boolean;
-  allowedTopicArn: string;
+  RESERVATION_TIME: string;
   enableFileLogging: boolean;
   logLevel: string;
 }

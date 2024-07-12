@@ -32,256 +32,267 @@ fastify.register(cors, {
   allowedHeaders: ["Content-Type", "Authorization"], // Allowed HTTP headers
 });
 
-// Middleware to verify API key
-fastify.addHook("preHandler", async (request, reply) => {
-  const apiKey = request.headers["authorization"];
-  if (!verifyApiKey(apiKey as string)) {
-    reply.status(401).send({ error: "Unauthorized" });
-  }
-});
-
 fastify.get("/products", async (request: FastifyRequest, reply: FastifyReply) => {
-  const productData = ((await prisma.product.findMany({
-    include: {
-      pricing: true
-    }
-  })));
+  try {
+    const productData = ((await prisma.product.findMany({
+      include: {
+        pricing: true
+      }
+    })));
 
-  reply.status(200).send({ productData })
+    reply.status(200).send({ productData })
+  } catch (err) {
+    logger.error(err)
+    reply.status(500).send({ message: 'Internal Server Error. There was an error getting products.' })
+  }
 })
 
-// POST endpoint to get a quote for products
-fastify.post("/quote", async (request: FastifyRequest<{ Body: QuoteRequest }>, reply: FastifyReply) => {
-  const { products } = request.body;
+fastify.register((instance, opts, next) => {
+  // Middleware to verify API key
+  instance.addHook("preHandler", async (request, reply) => {
+    const apiKey = request.headers["authorization"];
+    if (!verifyApiKey(apiKey as string)) {
+      reply.status(401).send({ error: "Unauthorized" });
+    }
+  });
 
-  try {
-    const response: QuoteResponse = {
-      products: [],
-      totals: [],
-    };
+  // POST endpoint to get a quote for products
+  instance.post("/quote", async (request: FastifyRequest<{ Body: QuoteRequest }>, reply: FastifyReply) => {
+    const { products } = request.body;
 
-    const currencyTotals: { [key: string]: Pricing } = {};
-
-    for (const product of products) {
-      const { product_id, quantity } = product;
-
-      // Fetch product pricing from the database
-      const productData = await prisma.product.findUnique({
-        where: { id: parseInt(product_id.toString()) },
-        include: {
-          pricing: true,
-        },
-      });
-
-      if (!productData) {
-        reply.status(404).send({ error: `Product with ID ${product_id} not found` });
-        return;
-      }
-
-      const productResponse: ProductResponse = {
-        product_id: product_id,
-        quantity: quantity,
-        pricing: [],
+    try {
+      const response: QuoteResponse = {
+        products: [],
+        totals: [],
       };
 
-      for (const price of productData.pricing) {
-        const totalAmount = price.amount * quantity;
+      const currencyTotals: { [key: string]: Pricing } = {};
 
-        productResponse.pricing.push({
-          currency: price.currency,
-          currency_type: price.currency_type,
-          currency_address: price.currency_address,
-          amount: totalAmount,
+      for (const product of products) {
+        const { product_id, quantity } = product;
+
+        // Fetch product pricing from the database
+        const productData = await prisma.product.findUnique({
+          where: { id: parseInt(product_id.toString()) },
+          include: {
+            pricing: true,
+          },
         });
 
-        if (!currencyTotals[price.currency]) {
-          currencyTotals[price.currency] = {
+        if (!productData) {
+          reply.status(404).send({ error: `Product with ID ${product_id} not found` });
+          return;
+        }
+
+        const productResponse: ProductResponse = {
+          product_id: product_id,
+          quantity: quantity,
+          pricing: [],
+        };
+
+        for (const price of productData.pricing) {
+          const totalAmount = price.amount * quantity;
+
+          productResponse.pricing.push({
             currency: price.currency,
             currency_type: price.currency_type,
             currency_address: price.currency_address,
-            amount: 0,
-          };
+            amount: totalAmount,
+          });
+
+          if (!currencyTotals[price.currency]) {
+            currencyTotals[price.currency] = {
+              currency: price.currency,
+              currency_type: price.currency_type,
+              currency_address: price.currency_address,
+              amount: 0,
+            };
+          }
+
+          currencyTotals[price.currency].amount += totalAmount;
         }
 
-        currencyTotals[price.currency].amount += totalAmount;
+        response.products.push(productResponse);
       }
 
-      response.products.push(productResponse);
+      response.totals = Object.values(currencyTotals);
+
+      reply.send(response);
+    } catch (error: any) {
+      logger.error("Error fetching product quote:", error);
+      reply.status(500).send({ error: "Internal Server Error" });
     }
+  });
 
-    response.totals = Object.values(currencyTotals);
+  // POST endpoint to authorize a sale
+  instance.post("/authorize", async (request: FastifyRequest<{ Body: AuthorizeRequest }>, reply: FastifyReply) => {
+    const { recipient_address, currency, products } = request.body;
+    const reservationTimeMs = parseInt(process.env.RESERVATION_TIME_MS || '300000');
 
-    reply.send(response);
-  } catch (error: any) {
-    logger.error("Error fetching product quote:", error);
-    reply.status(500).send({ error: "Internal Server Error" });
-  }
-});
+    try {
+      const response: AuthorizeResponse = {
+        reference: `O${Math.floor(Math.random() * 100000).toString().padStart(5, '0')}`,
+        currency: currency,
+        products: [],
+      };
 
-// POST endpoint to authorize a sale
-fastify.post("/authorize", async (request: FastifyRequest<{ Body: AuthorizeRequest }>, reply: FastifyReply) => {
-  const { recipient_address, currency, products } = request.body;
-  const reservationTimeMs = parseInt(process.env.RESERVATION_TIME_MS || '300000');
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + reservationTimeMs);
 
-  try {
-    const response: AuthorizeResponse = {
-      reference: `O${Math.floor(Math.random() * 100000).toString().padStart(5, '0')}`,
-      currency: currency,
-      products: [],
-    };
+      // Use a transaction to ensure data integrity
+      await prisma.$transaction(async (prisma) => {
+        for (const product of products) {
+          let { product_id, quantity } = product;
+          product_id = parseInt(product_id.toString());
 
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + reservationTimeMs);
-
-    // Use a transaction to ensure data integrity
-    await prisma.$transaction(async (prisma) => {
-      for (const product of products) {
-        let { product_id, quantity } = product;
-        product_id = parseInt(product_id.toString());
-
-        // Fetch available stock items from the database
-        const availableStockItems = await prisma.stockItem.findMany({
-          where: { product_id: product_id, available: true },
-          take: quantity,
-        });
-
-        if (availableStockItems.length < quantity) {
-          throw new Error(`Not enough stock for product ID ${product_id}`);
-        }
-
-        for (const stockItem of availableStockItems) {
-          const productResponse: AuthorizeProductResponse = {
-            product_id: product_id,
-            collection_address: serverConfig[environment].collectionAddress,
-            contract_type: 'ERC721', // or 'ERC1155' depending on your contract type
-            detail: [
-              {
-                token_id: stockItem.token_id, // Use the stock item's token ID
-                amount: await getAmountForCurrency(prisma, product_id, currency),
-              },
-            ],
-          };
-
-          // Reserve the stock
-          await prisma.reservation.create({
-            data: {
-              reference: response.reference,
-              product_id: product_id,
-              token_id: stockItem.token_id,
-              currency: currency,
-              recipient_address: recipient_address,
-              expires_at: expiresAt,
-              quantity: 1, // Add the missing quantity field
+          // Fetch available stock items from the database
+          const availableStockItems = await prisma.stockItem.findMany({
+            where: { product_id: product_id, available: true },
+            include: {
+              Product: true
             },
+            take: quantity,
           });
 
-          // Mark the stock item as not available
-          await prisma.stockItem.update({
-            where: { id: stockItem.id },
-            data: { available: false },
-          });
+          if (availableStockItems.length < quantity) {
+            throw new Error(`Not enough stock for product ID ${product_id}`);
+          }
 
-          response.products.push(productResponse);
+          for (const stockItem of availableStockItems) {
+            const productResponse: AuthorizeProductResponse = {
+              product_id: product_id,
+              collection_address: stockItem.Product.contract_address,
+              contract_type: 'ERC721', // or 'ERC1155' depending on your contract type
+              detail: [
+                {
+                  token_id: stockItem.token_id, // Use the stock item's token ID
+                  amount: await getAmountForCurrency(prisma, product_id, currency),
+                },
+              ],
+            };
+
+            // Reserve the stock
+            await prisma.reservation.create({
+              data: {
+                reference: response.reference,
+                product_id: product_id,
+                token_id: stockItem.token_id,
+                currency: currency,
+                recipient_address: recipient_address,
+                expires_at: expiresAt,
+                quantity: 1, // Add the missing quantity field
+              },
+            });
+
+            // Mark the stock item as not available
+            await prisma.stockItem.update({
+              where: { id: stockItem.id },
+              data: { available: false },
+            });
+
+            response.products.push(productResponse);
+          }
         }
+      });
+      const mappedResponse = {
+        currency: response.currency,
+        reference: response.reference,
+        products: response.products.map((product) => { return { ...product, product_id: product.product_id.toString() } })
       }
-    });
-    const mappedResponse = {
-      currency: response.currency,
-      reference: response.reference,
-      products: response.products.map((product) => { return { ...product, product_id: product.product_id.toString() } })
+
+      reply.send(mappedResponse);
+    } catch (error: any) {
+      logger.error(error)
+      logger.error("Error authorizing sale:", error.message);
+      reply.status(500).send({ error: error.message });
     }
+  });
 
-    reply.send(mappedResponse);
-  } catch (error: any) {
-    logger.error(error)
-    logger.error("Error authorizing sale:", error.message);
-    reply.status(500).send({ error: error.message });
-  }
-});
+  // POST endpoint to confirm a sale
+  instance.post("/confirm", async (request: FastifyRequest<{ Body: ConfirmRequest }>, reply: FastifyReply) => {
+    const { reference, tx_hash, token_id_hash, recipient_address, order } = request.body;
 
+    try {
+      const reservation = await prisma.reservation.findFirst({
+        where: { reference: reference }
+      });
 
+      if (!reservation) {
+        reply.status(404).send({ error: `Order with reference ${reference} not found` });
+        return;
+      }
 
-// POST endpoint to confirm a sale
-fastify.post("/confirm", async (request: FastifyRequest<{ Body: ConfirmRequest }>, reply: FastifyReply) => {
-  const { reference, tx_hash, token_id_hash, recipient_address, order } = request.body;
+      // Create a confirmation record
+      await prisma.confirmation.create({
+        data: {
+          reference: reference,
+          tx_hash: tx_hash,
+          token_id_hash: token_id_hash,
+          recipient_address: recipient_address,
+          contract_address: order.contract_address,
+          total_amount: order.total_amount,
+          deadline: order.deadline,
+          created_at: order.created_at,
+          currency: order.currency,
+          product_id: reservation.product_id,
+          token_id: reservation.token_id,
+        },
+      });
 
-  try {
-    const reservation = await prisma.reservation.findFirst({
-      where: { reference: reference }
-    });
+      // Remove the reservation
+      await prisma.reservation.delete({
+        where: { id: reservation.id },
+      });
 
-    if (!reservation) {
-      reply.status(404).send({ error: `Order with reference ${reference} not found` });
-      return;
+      reply.send({ status: 'success' });
+    } catch (error: any) {
+      logger.error("Error confirming transaction:", error.message);
+      reply.status(500).send({ error: error.message });
     }
+  });
 
-    // Create a confirmation record
-    await prisma.confirmation.create({
-      data: {
-        reference: reference,
-        tx_hash: tx_hash,
-        token_id_hash: token_id_hash,
-        recipient_address: recipient_address,
-        contract_address: order.contract_address,
-        total_amount: order.total_amount,
-        deadline: order.deadline,
-        created_at: order.created_at,
-        currency: order.currency,
-        product_id: reservation.product_id,
-        token_id: reservation.token_id,
-      },
-    });
+  // POST endpoint to handle expired orders
+  fastify.post("/expire", async (request: FastifyRequest<{ Body: ExpiredOrderRequest }>, reply: FastifyReply) => {
+    const { reference } = request.body;
 
-    // Remove the reservation
-    await prisma.reservation.delete({
-      where: { id: reservation.id },
-    });
+    try {
+      const reservation = await prisma.reservation.findFirst({
+        where: { reference: reference }
+      });
 
-    reply.send({ status: 'success' });
-  } catch (error: any) {
-    logger.error("Error confirming transaction:", error.message);
-    reply.status(500).send({ error: error.message });
-  }
-});
+      logger.info(JSON.stringify(reservation));
 
-// POST endpoint to handle expired orders
-fastify.post("/expire", async (request: FastifyRequest<{ Body: ExpiredOrderRequest }>, reply: FastifyReply) => {
-  const { reference } = request.body;
+      if (!reservation) {
+        reply.status(404).send({ error: `Order with reference ${reference} not found` });
+        return;
+      }
 
-  try {
-    const reservation = await prisma.reservation.findFirst({
-      where: { reference: reference }
-    });
+      // Release the stock
+      const stockItem = await prisma.stockItem.findFirst({
+        where: { token_id: reservation.token_id }
+      });
 
-    logger.info(JSON.stringify(reservation));
+      // Release the stock
+      await prisma.stockItem.update({
+        where: { id: stockItem?.id, token_id: reservation.token_id },
+        data: { available: true },
+      });
 
-    if (!reservation) {
-      reply.status(404).send({ error: `Order with reference ${reference} not found` });
-      return;
+      // Delete the reservation
+      await prisma.reservation.delete({
+        where: { id: reservation.id },
+      });
+
+      reply.send({ status: 'success' });
+    } catch (error: any) {
+      logger.error("Error expiring order:", error.message);
+      reply.status(500).send({ error: error.message });
     }
+  });
 
-    // Release the stock
-    const stockItem = await prisma.stockItem.findFirst({
-      where: { token_id: reservation.token_id }
-    });
+  next();
+})
 
-    // Release the stock
-    await prisma.stockItem.update({
-      where: { id: stockItem?.id, token_id: reservation.token_id },
-      data: { available: true },
-    });
-
-    // Delete the reservation
-    await prisma.reservation.delete({
-      where: { id: reservation.id },
-    });
-
-    reply.send({ status: 'success' });
-  } catch (error: any) {
-    logger.error("Error expiring order:", error.message);
-    reply.status(500).send({ error: error.message });
-  }
-});
 
 // Start the server
 const start = async () => {

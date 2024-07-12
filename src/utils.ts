@@ -79,7 +79,7 @@ export async function readAddressesFromCSV(filePath: string): Promise<{ address:
 // Function to verify the API key
 export function verifyApiKey(apiKey: string): boolean {
   // Replace 'your_hardcoded_api_key' with the actual API key you expect
-  const expectedApiKey = serverConfig[environment].INVENTORY_API_KEY || 'your_hardcoded_api_key';
+  const expectedApiKey = serverConfig[environment].INVENTORY_API_KEY || 'your_api_key';
   return apiKey === expectedApiKey;
 }
 
