@@ -1,0 +1,70 @@
+// prisma/schema.prisma
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x"]
+}
+
+model Product {
+  id              Int            @id @default(autoincrement())
+  name            String
+  description     String
+  rarity          String
+  contract_address String
+  metadata_id     String
+  pricing         Pricing[]
+  stockItems      StockItem[]
+  reservations    Reservation[]
+  confirmations   Confirmation[]
+}
+
+model Pricing {
+  id            Int      @id @default(autoincrement())
+  product_id    Int
+  currency      String
+  currency_type String
+  currency_address String?
+  amount        Float
+  Product       Product  @relation(fields: [product_id], references: [id])
+}
+
+model StockItem {
+  id                   Int      @id @default(autoincrement())
+  product_id           Int
+  token_id             String
+  available            Boolean  @default(true)
+  Product              Product  @relation(fields: [product_id], references: [id])
+}
+
+model Reservation {
+  id                Int      @id @default(autoincrement())
+  reference         String
+  product_id        Int
+  token_id          String
+  recipient_address String
+  quantity          Int
+  currency          String
+  expires_at        DateTime
+  Product           Product  @relation(fields: [product_id], references: [id])
+}
+
+model Confirmation {
+  id                Int      @id @default(autoincrement())
+  reference         String
+  tx_hash           String
+  token_id_hash     String
+  recipient_address String
+  contract_address  String
+  total_amount      Float
+  deadline          BigInt
+  created_at        BigInt
+  currency          String
+  product_id        Int
+  token_id          String
+  Product           Product  @relation(fields: [product_id], references: [id])
+}

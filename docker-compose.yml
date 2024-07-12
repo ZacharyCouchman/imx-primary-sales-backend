@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    image: primary-sales-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - prisma-db:/usr/src/app/prisma/
+    environment:
+      NODE_ENV: development
+
+volumes:
+  prisma-db:
